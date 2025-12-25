@@ -1,47 +1,145 @@
 /**
- * BBIH Vocabulary as a HTML jsTree view
- * (with synonymns, context menus and search)
- * TOBIAS Project, IHR Digital, 2017-05
+ * Vocabulary Explorer with Local File Picker
+ * Based on BBIH Vocabulary jsTree view
+ * Modified to load vocabulary files via browser file picker (no server needed)
  */
 
-// The tree and synonymn span selectors, a state variable for initial
-// visibility of synonymns, and the reverse lookup synonymn dictionary.
 var synSelector = '.usedFor, .relatedTerm, .usedFor-multi, .usedFor-multi-factor';
 var treeSelector = '#tobias-jsTree';
 var synVisible = true;
-var synLookup = {};  // The syn reverse lookup dict.
-var searchresults = null;  // The jquery collection of matching nodes returned by jsTree
-// var searchresultid = null;  // The index of the currently viewed search result (for paging)
+var synLookup = {};
+var searchresults = null;
+
+$(document).ready(function(){
+    
+    // File input change handler
+    $('#vocab-file-input').on('change', function(e) {
+        var file = e.target.files[0];
+        if (file) {
+            loadVocabularyFile(file);
+        }
+    });
+
+    // Button click triggers file input
+    $('#file-picker-btn').on('click', function() {
+        $('#vocab-file-input').click();
+    });
+
+    // "Load different file" button
+    $('#load-new-file').on('click', function() {
+        resetExplorer();
+    });
+
+    // Drag and drop support
+    var dropZone = $('#file-picker-container');
+    
+    dropZone.on('dragover', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        $(this).addClass('drag-over');
+    });
+
+    dropZone.on('dragleave', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        $(this).removeClass('drag-over');
+    });
+
+    dropZone.on('drop', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        $(this).removeClass('drag-over');
+        
+        var files = e.originalEvent.dataTransfer.files;
+        if (files.length > 0) {
+            loadVocabularyFile(files[0]);
+        }
+    });
+});
+
+function loadVocabularyFile(file) {
+    if (!file.name.match(/\.html?$/i)) {
+        showError('Please select an HTML file (.html or .htm)');
+        return;
+    }
+
+    $('#file-name-display').text('Loading: ' + file.name + '...');
+    $('#load-error').hide();
+
+    var reader = new FileReader();
+    
+    reader.onload = function(e) {
+        var content = e.target.result;
+        
+        if (!content.includes('<ul>') || !content.includes('class="term"')) {
+            showError('This file does not appear to be a valid vocabulary HTML file.');
+            return;
+        }
+
+        $('#file-name-display').text('Loaded: ' + file.name);
+        initializeTree(content);
+    };
+
+    reader.onerror = function() {
+        showError('Error reading file. Please try again.');
+    };
+
+    reader.readAsText(file);
+}
+
+function showError(message) {
+    $('#load-error').text(message).show();
+    $('#file-name-display').text('');
+}
+
+function resetExplorer() {
+    if ($.jstree.reference(treeSelector)) {
+        $(treeSelector).jstree('destroy');
+    }
+    
+    synLookup = {};
+    searchresults = null;
+    synVisible = true;
+    
+    $('#file-picker-container').removeClass('hidden');
+    $('#sticky-header').addClass('hidden');
+    $(treeSelector).empty();
+    $('#vocab-file-input').val('');
+    $('#file-name-display').text('');
+    $('#load-error').hide();
+    $('#search-input').val('');
+    $('#breadcrumb').html('');
+}
+
 
 //----------------------------------------------------------
-//
-// Setup jsTree, tooltips, toggle and search behaviour.
-//
-$(document).ready(function(){
-    // Initialise the tree and setup handlers
+// Initialize jsTree - KEY FIX: inject HTML into DOM first
+//----------------------------------------------------------
+function initializeTree(htmlContent) {
+    $('#file-picker-container').addClass('hidden');
+    $('#sticky-header').removeClass('hidden');
+
+    // KEY FIX: Insert the HTML directly into the container
+    // jstree will then parse the existing DOM structure
+    $(treeSelector).html(htmlContent);
+
+    // Now initialize jstree on the container with existing HTML
     $(treeSelector)
     .on('ready.jstree before_open.jstree', function (e, data) {
-      // As nodes are opened, obey global synonymn visibility state
       if (synVisible == false) {
         $(this).find(synSelector).hide();
       } else {
         $(this).find(synSelector).show();
       }
-      // Add parentheses before/after the related terms.
       $(this).find('ul > li').each(function () {
         $(this).find('span.relatedTerm').first().addClass('parenFirst');
         $(this).find('span.relatedTerm').last().addClass('parenLast');
       });
     })
     .on('model.jstree', function (e, data) {
-      // Iterate all the node data (because the dom objects aren't all visible)
-      // and build a reverse hash table for each of the synonymns. This allows
-      // the contextual menus to hyperlink back and forth in the tree.
-      // We get the node text, parse it into jquery, and select the spans text.
       data.nodes.forEach(function(i) {
         $('<div/>').html(data.instance.get_node(i).text)
         .find(synSelector).each(function() {
-          // Add id to the synLookup dictionary
           var currNids = synLookup[$(this).text()] || [];
           currNids.push(i);
           synLookup[$(this).text()] = currNids;
@@ -51,7 +149,6 @@ $(document).ready(function(){
     .on('activate_node.jstree', function (e, data) {
       var node = data.node;
 
-      // If node is not selected, show search or empty breadcrumb.
       if (!$(treeSelector).jstree(true).is_selected(node)) {
         if (searchresults) {
           $('#breadcrumb').html('Found ' + searchresults.length + ' matches.');
@@ -61,21 +158,18 @@ $(document).ready(function(){
         return;
       }
 
-      // Build the breadcrumb
       var nodeIds = $(treeSelector).jstree(true).get_path(node, false, true);
       var breadcrumb = [];
 
       nodeIds.forEach(function(id) {
         var n = $(treeSelector).jstree(true).get_node(id).text;
-        // Dummy div to perform the .find() from the parsed HTML string.
         var t = $('<div />').append($.parseHTML(n)).find('span.term').text();
-        breadcrumb.push('<a data-jstree-id="'+ id +'"" href="javascript:void(0)">'+ t +'</a>');
+        breadcrumb.push('<a data-jstree-id="'+ id +'" href="javascript:void(0)">'+ t +'</a>');
       });
 
       $('#breadcrumb').html(breadcrumb.join(' &gt; '));
     })
     .on('search.jstree', function (e, data) {
-      // Respond to the search by updating the breadcrumb with result count.
       searchresults = data.nodes;
       $('#search-input').removeClass('loading');
       $('#breadcrumb').html('Found ' + searchresults.length + ' matches.');
@@ -85,85 +179,50 @@ $(document).ready(function(){
       $('#search-input').removeClass('loading');
       $('#breadcrumb').html('');
     })
-    // Create/init the tree
     .jstree({
       'core': {
-        'data' : {
-          'url' : 'data/bbih-vocabulary.html',  // Get the tree data from here.
-        },
-        'multiple' : false,  // Single selection only.
+        'multiple' : false,
         'themes': {
-          'name': 'proton',  // Awesome oss jsTree theme!
+          'name': 'proton',
           'responsive': true,
           'icons' : false,
         },
       },
       'types' : {
-        'default' : {
-          'icon' : '',
-        },
-        'usedFor' : {
-          'icon' : 'glyphicon glyphicon-ok',
-        },
+        'default' : { 'icon' : '' },
+        'usedFor' : { 'icon' : 'glyphicon glyphicon-ok' },
       },
-      'state' : {
-        'ttl' : 86400000,  // 1 day in milliseconds
-      },
-      // Customise some node types and persist opened state
-      'plugins' : [ 'types', 'state', 'search' ],
+      'plugins' : [ 'types', 'search' ],
     });
 
-
-    // Setup the jQuery synonymn tooltips on the tree's spans.
+    // Setup tooltips
     $(treeSelector).on('mouseenter', synSelector, function (event) {
         $(this).qtip({
-            overwrite: false, // Don't overwrite tooltips already bound
+            overwrite: false,
             show: {
-                event: 'click', //event.type, // Use the same event type as above
+                event: 'click',
                 solo: true,
-                // ready: true, // Show immediately - important!
-                effect: function() {
-                  $(this).slideDown(100);
-                }
+                effect: function() { $(this).slideDown(100); }
             },
             content: {
               text: getTooltipContent(this),
               title: getTooltipTitle(this),
             },
-            position: {
-              my: 'top left',
-              at: 'bottom left',
-            },
-            hide: {
-              event: 'unfocus',
-              fixed: true,
-            },
-            events: {
-              render: function(event, api) {
-                var elem = api.elements.tip;  // Use 'tip' element
-              }
-            },
-            style: {
-              classes: 'qtip-bootstrap qtip-shadow',
-            },
+            position: { my: 'top left', at: 'bottom left' },
+            hide: { event: 'unfocus', fixed: true },
+            style: { classes: 'qtip-bootstrap qtip-shadow' },
         });
     });
 
-
-    // Setup toggle synonymns function for button click
-    $('#toggleSyns').click(function() {
+    $('#toggleSyns').off('click').on('click', function() {
       $(synSelector).toggle();
       synVisible = !synVisible;
     });
 
-
-    // Bind the search box keystrokes to the jstree search
-    // var tOut = false;
-    $("#search-input").keyup(function() {
-      var context = this;  // To pass this into the anon func
+    $("#search-input").off('keyup').on('keyup', function() {
+      var context = this;
       $(context).addClass('loading');
 
-      // Check for empty/clear search
       if(!$(context).val()) {
         $(treeSelector).jstree(true).clear_search();
         return;
@@ -176,97 +235,69 @@ $(document).ready(function(){
       $(this).data('timer', wait);
     });
 
-    // Keep the sticky-header on screen as you scroll down.
     var $window = $(window),
-    $sticky = $('#sticky-header'),
-    stickyTop = $sticky.offset().top;
-      $window.scroll(function() {
-        $sticky.toggleClass('sticky', $window.scrollTop() + 10 > stickyTop);
-      });
-
-
-});
-
-
-//----------------------------------------------------------
-//
-// Function to generate the tooltip title
-// Title depends on the class of the object.
-//
-function getTooltipTitle (obj) {
-  if ($(obj).hasClass('usedFor-multi')) {
-    return 'Use <em>one or more</em> of these terms:';
-
-  } else if ($(obj).hasClass('usedFor-multi-factor')) {
-    return 'Use <strong>ALL</strong> of these terms:';
-
-  } else if ($(obj).hasClass('relatedTerm')) {
-    return 'Consider these additional terms:';
-  }
-
-  return null;  // No title
+        $sticky = $('#sticky-header'),
+        stickyTop = $sticky.offset().top;
+    $window.off('scroll.sticky').on('scroll.sticky', function() {
+      $sticky.toggleClass('sticky', $window.scrollTop() + 10 > stickyTop);
+    });
 }
 
 
 //----------------------------------------------------------
-//
-// Function to generate the tooltip content
-// Lookup list of related synonymns.
-//
+// Tooltip helper functions
+//----------------------------------------------------------
+function getTooltipTitle (obj) {
+  if ($(obj).hasClass('usedFor-multi')) {
+    return 'Use <em>one or more</em> of these terms:';
+  } else if ($(obj).hasClass('usedFor-multi-factor')) {
+    return 'Use <strong>ALL</strong> of these terms:';
+  } else if ($(obj).hasClass('relatedTerm')) {
+    return 'Consider these additional terms:';
+  }
+  return null;
+}
+
 var synNode = null;
 function getTooltipContent (obj) {
   var synText = $(obj).text();
   synNode = $(obj).closest('li.jstree-node');
 
-  // Specific classes get syn list.
   if ($(obj).hasClass('usedFor-multi') ||
       $(obj).hasClass('usedFor-multi-factor') ||
       $(obj).hasClass('relatedTerm')) {
 
-    // Search the tree for other terms with this synonymn
-    var nodeIds = synLookup[synText] || [];  // Default empty array
+    var nodeIds = synLookup[synText] || [];
     var nodes = {};
     nodeIds.forEach(function(id) {
       var n = $(treeSelector).jstree(true).get_node(id).text;
-      // Dummy div to perform the .find() from the parsed HTML string.
       var t = $('<div />').append($.parseHTML(n)).find('span.term').text();
-      nodes[id] = t;  // id: term name
+      nodes[id] = t;
     });
 
-    // Sort the related nodes alphabetically
-    // TODO: sort it.
-
-    // Generate list from nodes dict
-    tipContent = '<ul>';
+    var tipContent = '<ul>';
     for(var index in nodes) {
       if (index == $(synNode).attr('id')) {
-        // If node is the current node, display without link.
         tipContent += '<li><em>'+ nodes[index] +'</em></li>';
       } else {
-        tipContent += '<li><a data-jstree-id="'+ index +'"" href="javascript:void(0)" >'+ nodes[index] +'</a></li>';
+        tipContent += '<li><a data-jstree-id="'+ index +'" href="javascript:void(0)">'+ nodes[index] +'</a></li>';
       }
-    };
+    }
     tipContent += '</ul>';
-
     return tipContent;
   }
 
-  // .usedFor terms simply return their parent term.
   return '"<em>' + $(obj).prevAll('.term').text() + '</em>" is the preferred term.';
 }
 
-
 //----------------------------------------------------------
-//
-// Dynamically attach click handler to the tooltip hyperlinks
-// to smooth scroll to the jsTree node.
-// (the hyperlink stores the data-jstree-id attribute)
-//
-$(document).on('click',  'a[data-jstree-id]', function() {
-  $(treeSelector).jstree(true).activate_node($(this).data('jstree-id'))
+// Click handler for tooltip hyperlinks
+//----------------------------------------------------------
+$(document).on('click', 'a[data-jstree-id]', function() {
+  $(treeSelector).jstree(true).activate_node($(this).data('jstree-id'));
   var nid = '#' + $(this).data('jstree-id');
 
   $('html, body').animate({
     scrollTop: $(nid).offset().top - 200
-  }, 500);  // 0.5sec animation
+  }, 500);
 });
